@@ -15,6 +15,59 @@ import {
   projectIdSchema,
 } from "@/server/mcp/schemas";
 
+// "People also ask" blocks carry their questions in a nested `items` array
+// (each with an expanded answer source); related searches carry plain strings.
+const peopleAlsoAskSchema = z.object({
+  items: z
+    .array(
+      z
+        .object({
+          title: z.string().nullable().optional(),
+          expanded_element: z
+            .array(
+              z
+                .object({
+                  url: z.string().nullable().optional(),
+                  domain: z.string().nullable().optional(),
+                  description: z.string().nullable().optional(),
+                })
+                .passthrough(),
+            )
+            .nullable()
+            .optional(),
+        })
+        .passthrough(),
+    )
+    .nullable()
+    .optional(),
+});
+
+const relatedSearchesSchema = z.object({
+  items: z.array(z.string()).nullable().optional(),
+});
+
+function extractQuestions(item: unknown) {
+  const parsed = peopleAlsoAskSchema.safeParse(item);
+  if (!parsed.success) return undefined;
+  return (parsed.data.items ?? []).flatMap((q) =>
+    q.title
+      ? [
+          {
+            question: q.title,
+            answerUrl: q.expanded_element?.[0]?.url ?? null,
+            answerDomain: q.expanded_element?.[0]?.domain ?? null,
+            answerExcerpt: q.expanded_element?.[0]?.description ?? null,
+          },
+        ]
+      : [],
+  );
+}
+
+function extractRelatedSearches(item: unknown) {
+  const parsed = relatedSearchesSchema.safeParse(item);
+  return parsed.success ? (parsed.data.items ?? []) : undefined;
+}
+
 type SerpItem = {
   type?: string | null;
   rank: number | null;
@@ -65,7 +118,7 @@ export const getSerpResultsTool = {
   config: {
     title: "Get Google SERP results",
     description:
-      "Fetch live Google organic search results for 1-10 keywords. Use this to inspect who ranks for a query, verify competitors, compare SERPs across keywords, or gather source URLs before content planning. Returns the top `depth` result rows per keyword (default 20). Charges credits per keyword: ~5 each at the default depth 20, and each additional 10 of depth adds ~2.5. Does not save results to OpenSEO. Per-keyword errors don't fail the batch.",
+      "Fetch live Google organic search results for 1-10 keywords. Use this to inspect who ranks for a query, verify competitors, compare SERPs across keywords, or gather source URLs before content planning. Returns the top `depth` result rows per keyword (default 20). Charges credits per keyword: ~5 each at the default depth 20, and each additional 10 of depth adds ~2.5. Does not save results to OpenSEO. People-also-ask blocks include their `questions` (with the answer source) and related-searches blocks include `relatedSearches`. Per-keyword errors don't fail the batch.",
     inputSchema,
     outputSchema: z.looseObject({
       results: z.array(
@@ -124,6 +177,12 @@ export const getSerpResultsTool = {
             url: item.url ?? null,
             domain: item.domain ?? null,
             description: item.description ?? null,
+            ...(item.type === "people_also_ask"
+              ? { questions: extractQuestions(item) }
+              : {}),
+            ...(item.type === "related_searches"
+              ? { relatedSearches: extractRelatedSearches(item) }
+              : {}),
           }));
           return { keyword: q.keyword, ok: true as const, items: trimmed };
         } catch (error) {
